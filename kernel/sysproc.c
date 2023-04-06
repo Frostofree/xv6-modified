@@ -158,13 +158,20 @@ sys_waitx(void)
 }
 
 uint64
-sys_settickets(void){
-    myproc()->tickets++;
+sys_set_tickets(void){
+    int num;
+    int f1 = argint(0,&num);
+
+    if(f1 < 0)
+    {
+      return -1;
+    }
+    myproc()->tickets+=num;
     return 0;
 }
 
 uint64
-sys_set_priority(){
+sys_set_priority(void){
     int np, pid ;
     int temp = 101;
 

@@ -3,8 +3,8 @@
                 Siddharth Mangipudi (2021101060)
                 Talib Siddiqui (2021101078)
 
-## Specification 1 : 
-### strace (5 marks)
+# Specification 1 : 
+## strace (5 marks)
 strace command is of the form :
 
 >                    strace mask command <arguments>
@@ -137,7 +137,7 @@ p->state = UNUSED;
 9. Output is displayed on shell - Note that trace and shell output are both intermixed, since both use the write command, for instance, `strace 32 echo hi` would execute echo hi as well, since we are exec()-ing it.    
 
 
-### Sigalarm and Sigreturn (10 marks)
+## Sigalarm and Sigreturn (10 marks)
 In this specification, we added a feature to xv6 that periodically alerted a process as it uses CPU time. Each clock cycle of the Hardware clovk is taken as a `tick`.
 We implemented a new `sigalarm(interval,handler)` system call, and also `sigreturn()` system call.
 If an application calls `alarm(n,fn)`, then after every n ticks of CPU time that the program consumes, the kernel will cause application function `fn` to be called. When `fn` returns, the application picks up where it left off.
@@ -236,7 +236,378 @@ return p;
 
 7. Run `make qemu` on shell and type `alarmtest` on hell, and check output.
 
-## Specification 3 :
+# Specification 2 :
+## Scheduling (65 marks)
+
+Each Scheduling Algorithm is given a Definitive TAG as follows:
+```cpp
+    FCFS - First Come First Serve
+    RR - Round Robin
+    PBS - Priority Based Scheduling
+    LBS - Lottery Based Scheduling
+```
+
+The Scheduling Algorithm that is to be used must be mentioned in the tags as follows
+```bash
+    $ make qemu SCHEDULER=<TAG>
+```
+
+Note that if multiple Scheduling algorithms are tested in succession, the object files in the folders correspond to the previous Scheduling algorithm TAG, hence we wish to get rid of these tags. We do so by running
+```bash
+    $ make clean
+```
+
+
+## 1) FCFS(5 marks)
+
+A scheduling policy that selects the process with the lowest creation time
+
+1. Added Creation time to struct proc
+```cpp
+  uint ctime;                   // When was the process created
+```
+2. Edited allocproc()
+```cpp
+  p->ctime = ticks;
+```
+3. Edited scheduler()
+```cpp
+#ifdef RR
+    RRschedule(c);
+#else
+
+void proc_swtch(struct cpu *c,struct proc *change){
+    if(!change) {
+        return;
+    }
+
+    // Switch to the new process
+    // lock and reacquire before jumping back
+    change->state = RUNNING;
+    c->proc = change;
+    swtch(&c->context,&change->context);
+
+    // The process is done running for now
+    c->proc = 0;
+    release(&change->lock);
+}
+void FCFSschedule(struct cpu *c){
+    struct proc *p;
+    struct proc *next = 0;
+    uint lowestFound = 2100000000;
+
+    for(p = proc; p < &proc[NPROC]; p++) {
+
+        // Wait for the process to get into the running state
+        acquire(&p->lock);
+        if(p->state != RUNNABLE) {
+            release(&p->lock);
+            continue;
+        }
+
+        // Compare creation time
+        // if the next process was created later assign it to p;
+        if(p->ctime < lowestFound) {
+            next = p;
+            lowestFound = p->ctime;
+            continue;
+        }
+        release(&p->lock);
+    }
+
+    proc_swtch(c,next);
+}
+```
+
+4.Edit kerneltrap()
+```cpp
+  // Enabling preemption for the default scheduling
+  // Disabling preemption for FCFS
+  #if defined RR
+    // give up the CPU if this is a timer interrupt.
+    if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
+      yield();
+  #endif
+
+```
+
+## 2) Lottery Based Scheduler(10 marks)
+
+Implement a preemptive scheduler that assigns a time slice to the process randomly in
+proportion to the number of tickets it owns.
+
+1. Declaring a random function to get the lottery winnner
+
+```cpp
+#define PHI 0x9e3779b9
+
+static uint rand_table[1000];
+void
+rand_ret(int n){
+
+    rand_table[0] = n * (PHI + 1);
+    rand_table[1] = n * (PHI + 2);
+    rand_table[2] = n * (PHI + 3);
+
+    for (int i = 3; i < 1000; ++i) {
+        rand_table[i] = rand_table[i-1] ^ rand_table[i-2] ^ i ^ PHI;
+    }
+}
+```
+
+2. Edit allocproc()
+```cpp
+  p->tickets = 1;
+```
+
+3. Implementing set_tickets(int)
+```cpp
+
+// user.h
+int set_tickets(int);
+
+
+// sysproc.h
+uint64
+sys_set_tickets(void){
+    int num;
+    int f1 = argint(0,&num);
+
+    if(f1 < 0)
+    {
+      return -1;
+    }
+    myproc()->tickets+=num;
+    return 0;
+}
+
+
+// syscall.h
+#define SYS_set_tickets  23
+
+// syscall.c
+extern uint64 sys_set_tickets(void);
+
+
+```
+4. Edited scheduler()
+```cpp
+  void LOTTERYschedule(struct cpu *c){
+    struct proc *p;
+    int win_index = 0;
+
+    // Generating a random number
+   rand_ret(237592526);
+
+    // Calculating total tickets for running processses
+   int total_tix = total_tickets();
+
+    // Picking a ticket at random which won the lottery
+   int winner_ticket = rand_table[667]%total_tix;
+    int winner_ticket = 10;
+
+    for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if(p->state != RUNNABLE){
+            release(&p->lock);
+            continue;
+        }
+
+        // Select the process which won the lottery(holds the winning ticket)
+        if(winner_ticket > (win_index + p->tickets)){
+            win_index += p->tickets;
+            release(&p->lock);
+            continue;
+        }
+        release(&p->lock);
+        break;
+    }
+    proc_swtch(c,p);
+
+}
+
+```
+
+## 3) Priority Based Scheduler (15 Marks)
+
+1. Added required variables to struct proc()
+```cpp 
+  uint ctime;                   // When was the process created
+  uint srtime;                  // When did it start
+  uint rtime;                   // How long the process ran for
+  uint etime;                   // When did the process exited
+
+  uint wtime;                   // Total time waited for
+  uint trtime;                  // Total time ran for
+
+  uint stime;                   // Time spent sleeping
+  uint runs;                    // Number of times ran
+  uint priority;                // Process's Priority
+```
+
+2. Initialise the variables in allocproc()
+```cpp
+  p->rtime = 0;
+  p->etime = 0;
+  p->stime = 0;
+  p->trtime= 0;
+  p->runs = 0;
+  p->priority = 60;
+  p->tickets = 1;
+  p->ctime = ticks;
+```
+3. Edited scheduler() with a helper function with helps in switching
+```cpp
+void PBSschedule(struct cpu *c){
+    struct proc *p;
+    struct proc *priority_proc = 0;
+    int dp = 101;         //  Highest Priority
+    int proc_dp;         //  Dynamic Priority for the process
+    int niceness = 5;   //  Default Nice value
+    int flag = 0;      //  Initialising flag
+    for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+
+        // Check if the denum is positive
+        // If yes then update the value of Niceness for this process
+        if(p->stime + p->rtime > 0){
+            niceness = 10*p->stime;
+            niceness /= p->stime+p->rtime;
+        }
+        int temp = p->priority - niceness + 5;
+        proc_dp = MAX(0, MIN(temp, 100));
+
+        if(p->state == RUNNABLE){
+            // If process isn't assinged yet
+            if(priority_proc == 0)
+                flag = 1;
+
+            // If the dp is greater than the process's dp
+            if(dp > proc_dp)
+                flag = 1;
+
+            // If the dp is same then we 
+            // compare how many times we have ran the process
+            // Checking for the nullity of priority_proc
+            if(dp == proc_dp && priority_proc) {
+                if (priority_proc->runs > p->runs) {
+                    flag = 1;
+                }
+                // If runs are equal too then compare creation time
+                if(priority_proc->runs == p->runs && priority_proc->ctime > p->ctime){
+                    flag = 1;
+                }
+            }
+
+            if(flag == 1){
+                if(priority_proc) {
+                    release(&priority_proc->lock);
+                }
+                dp = proc_dp;
+                priority_proc = p;
+                continue;
+            }
+            release(&p->lock);
+        }
+        priority_switch(c,priority_proc);
+    }
+}
+
+// To change the processes
+void priority_switch(struct cpu *c,struct proc *change){
+    if(!change){
+        return;
+    }
+
+    // Switch to the new process
+    // lock and reacquire before jumping back
+    change->state = RUNNING;
+    change->stime = ticks;
+
+    // Increment Number of run s
+    change->runs++;
+
+    // Set tje Sleep and Run Time for the highest priority process as 0
+    change->rtime = 0;
+    change->stime = 0;
+
+    // Process is done runnning now
+    c->proc = change;
+    swtch(&c->context,&change->context);
+
+    // Release Lock
+    c->proc = 0;
+    release(&change->lock);
+}
+
+```
+4. Edited clockintr() in trap.c
+
+```cpp
+// Updating time
+  update_time();
+```
+
+5. Added a new system call set_priority(int,int)
+
+```cpp
+// user.h
+int set_priority(int (pid),int (tickets));
+
+// sysproc.h
+uint64
+sys_set_priority(){
+    int np, pid ;
+    int temp = 101;
+
+    int f1 = argint(0,&np);
+    int f2 = argint(1,&pid);
+
+    // If the input format is wrong then exit
+    if(f1 < 0 || f2 < 0){
+        return -1;
+    }
+    struct proc *p;
+    for(p = proc; p < &proc[NPROC]; p++){
+        // Locking the process
+        acquire(&p->lock);
+
+        // Finding the process and checking if new_priority is in the
+        // correct range of values
+        if(p->pid == pid && np >= 0 && np <= 100){
+
+            // Setting the runtime and sleeptime to 0
+            p->stime = 0;
+            p->rtime = 0;
+
+            // Saving the current priority to return later
+            temp = p->priority;
+
+            // Switching the priority
+            p->priority = np;
+        }
+        // Unlock the process
+        release(&p->lock);
+    }
+    // If the new priority is lesser than old then yield to cpu
+    if(temp > np)
+        yield();
+
+
+    // Return the old priority
+    return temp;
+}
+
+// syscall.h
+#define SYS_priority 24
+
+// syscall.c
+extern uint64 sys_set_priority(void);
+
+```
+
+
+# Specification 3 :
 ### Copy-on-Write Fork (15 marks)
 
 Copy-on-Write Fork is a Virtual memory management modification which can be applied in kernels.
@@ -504,4 +875,51 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
 Run `make qemu` and run `cowtest` to see the COW functionality works, similarly, run `usertests` in the shell.
 
+# Specification 4 - Report
+Using the `scheduler.c` I created 100 processes which forked, of which , N were I/O Bound processes.
+Every I/O bound Process sleeps for 200 ms, whereas every CPU bound process executes the following.
+```cpp
+  for (int i = 0; i < 1000000000; i++) {}; // CPU bound process
+```
+I also edited the `scheduler.c` file to set tickets for `LBS`.
+The number of tickets that are added to every process is `i%3+1` tickets where `i` is the inherent Process number.
 
+I then calculated the Average Running times,Waiting times of the processes, and tabulated them into graphs.
+
+## Comparing Average Running times of processes in different Scheduling Algorithms
+
+![Image not found](running.png)
+
+As Expected, We see that in all scheduling algorithms, the average running time of processes are decreasing, since the processes are waiting in the I/O queue for most of the time.
+
+We also see that the Smarter, Priority based Scheduling performs better than it's Counterparts. This is because it allows te preemption of processes, hence giving other processes time to also run.
+>Note that these values are rounded down to the nearest integer 
+
+## Comparing Average Waiting times of processes in different Scheduling Algorithms
+
+![Image not found](waiting.png)
+
+As Expected, We see that in all scheduling algorithms, the average waiting time of processes are increasing, since the processes are waiting in the I/O queue for most of the time.
+
+We also see that in this case, FCFS and PBS performed similarly, and had lower waiting times than RR Scheduling.
+We can infer from this data that FCFS is better with shorter CPU burst periods, that is to say, more I/O bound processes. This corresponds with the theory that FCFS scheduling tends to penalise short processes.
+
+In both cases we see that LBS scheduling performed poorly, and RR scheduling performed average on deafult xv6 settings for the time quanta.
+
+For 100 process, if number of I/O bound processes are 20, then the following are the avg_runtime and avg_waittime for each process
+
+RR : 
+  - Average Running time : 2
+  - Average Waiting time : 74
+
+LBS :
+  - Average Running time : 1
+  - Average Waiting time : 70
+
+FCFS : 
+  - Average Running time : 3
+  - Average Waiting time : 59 
+
+PBS :
+  - Average Running time : 3
+  - Average Waiting time : 59 

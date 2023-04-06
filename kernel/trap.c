@@ -98,7 +98,7 @@ void usertrap(void)
   if (killed(p))
     exit(-1);
 
-  #if defined RR || LBS   
+  #if defined RR || LBS || PBS
   // give up the CPU if this is a timer interrupt.
   // If the process needs to alarm, we must save current trapframe , call the handler and run function after returning to userspace
     if (which_dev == 2)
@@ -205,9 +205,9 @@ void clockintr()
 {
   acquire(&tickslock);
   ticks++;
-  update_time();
   wakeup(&ticks);
   release(&tickslock);
+  update_time();
 }
 
 // check if it's an external interrupt or software interrupt,

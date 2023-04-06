@@ -24,6 +24,6 @@
 #define SYS_sigalarm  23
 #define SYS_sigreturn 24
 #define SYS_waitx  25
-#define SYS_settickets  26
+#define SYS_set_tickets  26
 #define SYS_set_priority 27
 
